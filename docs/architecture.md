@@ -9,6 +9,7 @@ calendar events (port of the Deno `icloud-calendar-api`) and solar data.
 
 - `cmd/home-apis` – entry point; loads config (tzdata embedded for minimal containers).
 - `internal/config` – config loading (JSON file + env overrides).
+- `internal/server` – HTTP handler (`/health`, `/events`, `/solar`, `/kitchen`).
 
 ## Endpoints
 
@@ -50,6 +51,77 @@ truncated to `max_events`. An all-day event appears on every day in
     ]
   },
   "fetched_at": "2026-06-05T08:00:00.000Z"
+}
+```
+
+### HTTP endpoints (`internal/server`)
+
+All routes except `/health` require `Authorization: Bearer <api_token>` when
+`api_token` is set (constant-time compare). The check runs before routing, so
+unknown paths also give `401 {"error":"Unauthorized"}`. Unknown route with a
+valid token: `404`, `text/plain`, body `Not Found`. Non-GET/HEAD on a known
+route: `405`. JSON bodies are 2-space indented, no HTML escaping, no trailing
+newline (`/health` is compact). Errors: `{"error":"<message>"}`.
+
+**`GET /health`** (public) – `status` is always first; the status objects show
+the last successful fetch/poll (UTC RFC3339, empty if none yet) and last error.
+
+```json
+{"status":"ok","calendar":{"last_success":"2026-11-10T21:00:00Z","last_error":""},"solar":{"last_success":"2026-11-10T21:04:12Z","last_error":""}}
+```
+
+**`GET /events`** – the `/events` contract above, with `max_events`, shift 0.
+Calendar failure with no cache: `502 {"error":"<message>"}`.
+
+**`GET /solar`** – the latest `Snapshot`; `503 {"error":"no solar data yet"}`
+until the first successful poll.
+
+```json
+{
+  "pv_w": 1000,
+  "load_w": 500,
+  "grid_w": -500,
+  "battery_soc": 50,
+  "battery_w": 0,
+  "updated_at": "2026-11-10T06:39:12Z",
+  "source": "fake",
+  "stale": false
+}
+```
+
+**`GET /kitchen[?shift=0|1]`** – one call for the battery-powered kitchen panel.
+Keys in order `calendar` (identical structure to `/events`, uses
+`kitchen_max_events`, `shift` moves "Today" to tomorrow for late evenings;
+anything but 0/1 → `400`), `solar` (Snapshot, or `null` before the first poll)
+and `server_time` (now in the configured timezone, RFC3339 with offset). A
+calendar error gives `502` so the panel keeps its last screen.
+
+```json
+{
+  "calendar": {
+    "today": {
+      "label": "Today",
+      "date": "2026-11-10",
+      "events": []
+    },
+    "tomorrow": {
+      "label": "Tomorrow",
+      "date": "2026-11-11",
+      "events": []
+    },
+    "fetched_at": "2026-11-10T14:22:03.721Z"
+  },
+  "solar": {
+    "pv_w": 1000,
+    "load_w": 500,
+    "grid_w": -500,
+    "battery_soc": 50,
+    "battery_w": 0,
+    "updated_at": "2026-11-10T06:39:12Z",
+    "source": "fake",
+    "stale": false
+  },
+  "server_time": "2026-11-10T22:05:00+01:00"
 }
 ```
 
