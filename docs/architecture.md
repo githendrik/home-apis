@@ -91,19 +91,23 @@ it never fails the whole calendar.
 
 `calendar.Service` sits between the HTTP handlers and a `Fetcher`:
 
-1. `Get(shift, max)` checks the cache. It is fresh if it is younger than
-   `cache_ttl_seconds` **and** was fetched for today's window (the window moves
-   at local midnight, which forces a refetch).
-2. Otherwise the `Fetcher` is asked for the window `[today 00:00, today+3d)`
-   in the configured timezone and the result is run through `Expand`. A mutex
-   is held across the fetch, so concurrent requests on a cold/expired cache
-   share one fetch (single-flight).
-3. The expanded occurrences are cached; `shift`/`max_events` are applied per
-   request by `Build`, so all callers (`/events`, kitchen panel) share one fetch.
-4. **Stale on error:** if a refresh fails and a cache exists, the stale data is
-   served (no error) and `Status().LastError` is set; with no cache the error is
-   returned (handlers map it to `502`). `Status().LastSuccess` is the last
-   successful refresh.
+1. `Get(shift, max)` serves from the cache whenever one exists. The cache is
+   *stale* if older than `cache_ttl_seconds` or fetched for a previous day
+   (the window moves at local midnight; the old window still covers today..+2,
+   so `Build` keeps working).
+2. **Cold cache** (never fetched successfully): `Get` fetches synchronously,
+   single-flight (concurrent callers wait on one fetch); a failure is returned
+   (handlers map it to `502`).
+3. **Warm but stale cache:** `Get` returns the cached data immediately and
+   starts exactly ONE background refresh (own 30 s timeout context, not the
+   request's). `/kitchen` therefore never waits on iCloud once warmed.
+   The refresh fetches `[today 00:00, today+3d)` in the configured timezone
+   and runs it through `Expand`.
+4. **Stale on error / backoff:** if a background refresh fails the stale data
+   keeps being served, `Status().LastError` is set, and no new attempt is made
+   for 60 s. `Status().LastSuccess` is the last successful refresh.
+5. `shift`/`max_events` are applied per request by `Build`, so all callers
+   (`/events`, kitchen panel) share one cache.
 
 `NewICloudFetcher` speaks CalDAV (`emersion/go-webdav`) to `caldav.icloud.com`
 with basic auth (app-specific password): principal -> calendar-home-set ->

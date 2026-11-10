@@ -17,14 +17,21 @@ type fakeFetcher struct {
 	err   error
 	cals  []*ical.Calendar
 	froms []time.Time
+	block chan struct{}
 }
 
 func (f *fakeFetcher) Fetch(ctx context.Context, from, to time.Time) ([]*ical.Calendar, error) {
 	f.calls.Add(1)
 	time.Sleep(10 * time.Millisecond)
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	block := f.block
 	f.froms = append(f.froms, from)
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.cals, f.err
 }
 
@@ -86,6 +93,7 @@ func TestServiceRefetchesAfterTTL(t *testing.T) {
 	s.Get(ctx, 0, 3)
 	c.advance(301 * time.Second)
 	s.Get(ctx, 0, 3)
+	s.bg.Wait()
 	if n := f.calls.Load(); n != 2 {
 		t.Fatalf("calls=%d", n)
 	}
@@ -97,11 +105,67 @@ func TestServiceRefetchesOnDayChange(t *testing.T) {
 	s.Get(ctx, 0, 3)
 	c.advance(2 * time.Minute)
 	s.Get(ctx, 0, 3)
+	s.bg.Wait()
 	if n := f.calls.Load(); n != 2 {
 		t.Fatalf("calls=%d", n)
 	}
 	if !f.froms[0].Equal(zt(t, 0, 0)) || !f.froms[1].Equal(zt(t, 0, 0).AddDate(0, 0, 1)) {
 		t.Fatalf("windows %v", f.froms)
+	}
+}
+
+func TestServiceWarmCacheDoesNotBlock(t *testing.T) {
+	s, f, c := newSvc(t, zt(t, 8, 0))
+	ctx := context.Background()
+	s.Get(ctx, 0, 3)
+	block := make(chan struct{})
+	f.mu.Lock()
+	f.block = block
+	f.mu.Unlock()
+	c.advance(301 * time.Second)
+
+	done := make(chan Response, 1)
+	go func() {
+		r, _ := s.Get(ctx, 0, 3)
+		done <- r
+	}()
+	select {
+	case r := <-done:
+		if len(r.Today.Events) != 1 {
+			t.Fatalf("got %+v", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Get blocked on refresh")
+	}
+	// further Gets while the refresh is in flight must not start another
+	s.Get(ctx, 0, 3)
+	s.Get(ctx, 0, 3)
+	close(block)
+	s.bg.Wait()
+	if n := f.calls.Load(); n != 2 {
+		t.Fatalf("calls=%d", n)
+	}
+}
+
+func TestServiceRetryBackoff(t *testing.T) {
+	s, f, c := newSvc(t, zt(t, 8, 0))
+	ctx := context.Background()
+	s.Get(ctx, 0, 3)
+	f.setErr(errors.New("boom"))
+	c.advance(301 * time.Second)
+	s.Get(ctx, 0, 3)
+	s.bg.Wait() // failed attempt #2
+	c.advance(30 * time.Second)
+	s.Get(ctx, 0, 3)
+	s.bg.Wait()
+	if n := f.calls.Load(); n != 2 {
+		t.Fatalf("retried within backoff: calls=%d", n)
+	}
+	c.advance(31 * time.Second)
+	s.Get(ctx, 0, 3)
+	s.bg.Wait()
+	if n := f.calls.Load(); n != 3 {
+		t.Fatalf("no retry after backoff: calls=%d", n)
 	}
 }
 
@@ -118,6 +182,7 @@ func TestServiceServesStaleOnError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.bg.Wait()
 	if len(got.Today.Events) != len(first.Today.Events) || len(got.Today.Events) != 1 {
 		t.Fatalf("got %+v", got)
 	}
