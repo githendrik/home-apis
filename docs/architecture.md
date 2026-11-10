@@ -83,7 +83,38 @@ exclusive end), and the full `RRULE` feature set of `rrule-go` plus `RDATE` and
 replace the generated instance. `STATUS:CANCELLED` events are skipped; missing
 `SUMMARY` becomes `Untitled`. Not supported: `RANGE=THISANDFUTURE` overrides,
 custom `VTIMEZONE` definitions (only IANA `TZID`s). Day grouping is done by
-`calendar.Build` (see `/events` contract).
+`calendar.Build` (see `/events` contract). A malformed event (unknown `TZID`,
+unparsable `DTSTART`/`RRULE`) is skipped with a `slog` warning (UID + reason);
+it never fails the whole calendar.
+
+## Calendar data flow and caching
+
+`calendar.Service` sits between the HTTP handlers and a `Fetcher`:
+
+1. `Get(shift, max)` checks the cache. It is fresh if it is younger than
+   `cache_ttl_seconds` **and** was fetched for today's window (the window moves
+   at local midnight, which forces a refetch).
+2. Otherwise the `Fetcher` is asked for the window `[today 00:00, today+3d)`
+   in the configured timezone and the result is run through `Expand`. A mutex
+   is held across the fetch, so concurrent requests on a cold/expired cache
+   share one fetch (single-flight).
+3. The expanded occurrences are cached; `shift`/`max_events` are applied per
+   request by `Build`, so all callers (`/events`, kitchen panel) share one fetch.
+4. **Stale on error:** if a refresh fails and a cache exists, the stale data is
+   served (no error) and `Status().LastError` is set; with no cache the error is
+   returned (handlers map it to `502`). `Status().LastSuccess` is the last
+   successful refresh.
+
+`NewICloudFetcher` speaks CalDAV (`emersion/go-webdav`) to `caldav.icloud.com`
+with basic auth (app-specific password): principal -> calendar-home-set ->
+calendar lookup by trimmed, case-insensitive display name -> `calendar-query`
+for `VEVENT` in the window. Discovery is cached after the first success. iCloud
+answers the home-set with an absolute URL on a shard host
+(`pNN-caldav.icloud.com`); go-webdav drops the host, so the raw PROPFIND
+response is inspected and a new client is created for that host.
+
+`home-apis --dump-events` (hidden debug flag) fetches once and prints the
+`/events` JSON.
 
 ## Deployment
 

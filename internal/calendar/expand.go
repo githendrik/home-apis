@@ -2,6 +2,7 @@ package calendar
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
@@ -33,12 +34,18 @@ func Expand(cals []*ical.Calendar, from, to time.Time, loc *time.Location) ([]Oc
 		for _, uid := range order {
 			occ, err := expandUID(byUID[uid], from, to, loc)
 			if err != nil {
-				return nil, fmt.Errorf("event %q: %w", uid, err)
+				slog.Warn("skipping malformed event", "uid", uid, "reason", err)
+				continue
 			}
 			out = append(out, occ...)
 		}
 	}
 	return out, nil
+}
+
+func uidOf(ev ical.Event) string {
+	uid, _ := ev.Props.Text(ical.PropUID)
+	return uid
 }
 
 func expandUID(events []ical.Event, from, to time.Time, loc *time.Location) ([]Occurrence, error) {
@@ -70,12 +77,17 @@ func expandUID(events []ical.Event, from, to time.Time, loc *time.Location) ([]O
 
 	for _, ev := range masters {
 		base, ok, err := single(ev, loc)
-		if err != nil || !ok {
-			return out, err
+		if err != nil {
+			slog.Warn("skipping malformed event", "uid", uidOf(ev), "reason", err)
+			continue
+		}
+		if !ok {
+			continue
 		}
 		set, err := ev.RecurrenceSet(loc)
 		if err != nil {
-			return nil, err
+			slog.Warn("skipping event with bad recurrence", "uid", uidOf(ev), "reason", err)
+			continue
 		}
 		if set == nil {
 			if overlaps(base, from, to) {
