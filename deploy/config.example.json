@@ -1,0 +1,13 @@
+{
+  "icloud_username": "your@apple.id",
+  "icloud_app_password": "xxxx-xxxx-xxxx-xxxx",
+  "calendar_name": "Family",
+  "port": 3000,
+  "max_events": 3,
+  "cache_ttl_seconds": 300,
+  "api_token": "your-secret-token-here",
+  "timezone": "Europe/Zurich",
+  "kitchen_max_events": 5,
+  "solar_source": "fake",
+  "solar_poll_seconds": 60
+}
