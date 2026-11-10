@@ -120,6 +120,34 @@ response is inspected and a new client is created for that host.
 `home-apis --dump-events` (hidden debug flag) fetches once and prints the
 `/events` JSON.
 
+## Solar
+
+`internal/solar` defines `Source` (`Name()`, `Read(ctx) (Snapshot, error)`),
+a `Poller` and a deterministic fake source. Real GoodWe sources plug in later.
+
+**Snapshot / sign conventions** (JSON keys in this order): `pv_w`, `load_w`,
+`grid_w` (positive = import, negative = export), `battery_soc` (0-100),
+`battery_w` (positive = charging, negative = discharging), `updated_at` (UTC
+RFC3339, seconds precision), `source`, `stale`. Balance:
+`pv_w - load_w - battery_w + grid_w == 0`.
+
+**Fake source** (`solar_source: "fake"`, `Name()` = `fake`) is a pure function
+of the clock in the configured timezone:
+- PV = peak * sin(pi * (t - sunrise) / (sunset - sunrise)) between sunrise and
+  sunset, else 0. A seasonal factor (cosine over day-of-year, 1 at June 21)
+  moves sunrise 05:30 -> 08:10, sunset 21:20 -> 16:45 and peak 6.5 kW -> 2.5 kW.
+- Load = 350 W base + 900 W Gaussian bumps (sigma 45 min) at 07:00 and 18:30.
+- SoC: 20 % at 06:00, linear to 95 % at 15:00, linear down to 20 % at 06:00.
+- Battery absorbs surplus up to 3 kW while SoC < 100; covers deficit up to
+  3 kW while SoC > 20; the grid takes the remainder (so evenings import/discharge
+  and early mornings at the 20 % floor import, exercising the panel warnings).
+- PV, load and battery are rounded to 10 W; grid is derived.
+
+**Poller:** `Run` polls immediately, then every `solar_poll_seconds`. Failures
+keep the last good snapshot and set `Status()` last error. `Latest()` returns
+`ok=false` until the first success and sets `stale` at read time when
+`now - lastSuccess > 3 * every`; `updated_at` stays the source's timestamp.
+
 ## Deployment
 
 _To be documented._
