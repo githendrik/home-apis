@@ -33,6 +33,19 @@ Absent or `null` keys use the default.
 | `solar_source` | `SOLAR_SOURCE` | `fake` (only supported value) |
 | `solar_poll_seconds` | `SOLAR_POLL_SECONDS` | `60` |
 
+## Calendar expansion
+
+`internal/calendar.Expand` turns parsed iCalendar objects (`emersion/go-ical`)
+into concrete occurrences overlapping a window `[from, to)`, all in the
+configured timezone. Supported: `DTSTART`/`DTEND`/`DURATION` with `TZID`, UTC
+(`Z`) and floating times (read in the configured zone), all-day (`VALUE=DATE`,
+exclusive end), and the full `RRULE` feature set of `rrule-go` plus `RDATE` and
+`EXDATE`. Per-instance changes (`RECURRENCE-ID` overrides with the same `UID`)
+replace the generated instance. `STATUS:CANCELLED` events are skipped; missing
+`SUMMARY` becomes `Untitled`. Not supported: `RANGE=THISANDFUTURE` overrides,
+custom `VTIMEZONE` definitions (only IANA `TZID`s). Day grouping happens in a
+separate step.
+
 ## Deployment
 
 _To be documented._
