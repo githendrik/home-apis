@@ -12,7 +12,46 @@ calendar events (port of the Deno `icloud-calendar-api`) and solar data.
 
 ## Endpoints
 
-_None yet._
+### `/events` contract
+
+Produced by `calendar.Build` + `calendar.Encode` (2-space indented JSON, no
+trailing newline, `&` etc. not HTML-escaped). `today` is today + shift (shift
+is applied by the caller, e.g. for the late-evening kitchen panel); labels stay
+`"Today"` / `"Tomorrow"`. Per day: all-day events first, then by start, then
+truncated to `max_events`. An all-day event appears on every day in
+`[start, end)` (end exclusive); a timed event only on its start day. Timed
+`start`/`end` are local wall time `YYYY-MM-DDTHH:MM:SS` (no zone); all-day are
+`YYYY-MM-DD`. `fetched_at` is UTC with milliseconds. Empty days give `[]`.
+
+```json
+{
+  "today": {
+    "label": "Today",
+    "date": "2026-06-05",
+    "events": [
+      {
+        "summary": "Dentist",
+        "start": "2026-06-05T14:00:00",
+        "end": "2026-06-05T15:00:00",
+        "allDay": false
+      }
+    ]
+  },
+  "tomorrow": {
+    "label": "Tomorrow",
+    "date": "2026-06-06",
+    "events": [
+      {
+        "summary": "Hochzeitstag",
+        "start": "2026-06-06",
+        "end": "2026-06-07",
+        "allDay": true
+      }
+    ]
+  },
+  "fetched_at": "2026-06-05T08:00:00.000Z"
+}
+```
 
 ## Config
 
@@ -43,8 +82,8 @@ exclusive end), and the full `RRULE` feature set of `rrule-go` plus `RDATE` and
 `EXDATE`. Per-instance changes (`RECURRENCE-ID` overrides with the same `UID`)
 replace the generated instance. `STATUS:CANCELLED` events are skipped; missing
 `SUMMARY` becomes `Untitled`. Not supported: `RANGE=THISANDFUTURE` overrides,
-custom `VTIMEZONE` definitions (only IANA `TZID`s). Day grouping happens in a
-separate step.
+custom `VTIMEZONE` definitions (only IANA `TZID`s). Day grouping is done by
+`calendar.Build` (see `/events` contract).
 
 ## Deployment
 
