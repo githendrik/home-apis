@@ -15,9 +15,14 @@ requires a firmware release.
 ## Goals
 
 - Port `GET /events` from `~/Repos/github/githendrik/icloud-calendar-api` with a
-  **byte-compatible response** (same JSON shape, field names, ordering semantics,
-  recurrence expansion, today/tomorrow split, timezone handling), so existing
-  panels (eink-desk-panel) keep working unchanged.
+  **contract-compatible response**: same JSON shape, keys, key order, 2-space
+  pretty printing, `label` values ("Today"/"Tomorrow"), sort order, per-day
+  limit, auth and error behaviour. Deliberate fixes (assistant's call): all
+  `start`/`end` are Europe/Zurich wall time without `Z` (the Deno version leaked
+  UTC `...Z` strings for non-recurring UTC events, which the desk panel would
+  show at the wrong hour), and recurrences are expanded with a real RRULE
+  engine (INTERVAL, BYDAY, UNTIL, EXDATE, overridden instances) instead of the
+  Deno approximation.
 - New `GET /solar`: current PV production, house consumption, grid import/export,
   home battery SoC and charge/discharge power, plus data timestamp.
 - New `GET /kitchen`: calendar + solar combined in one response, sized for a
@@ -42,8 +47,8 @@ requires a firmware release.
   archived after cut-over.
 - Calendar proxy and solar live in **one service, one container**.
 - `/events` stays as is for other panels; kitchen panel uses a separate endpoint.
-- GoodWe will likely be on a **separate WiFi** from the panels. SEMS cloud is
-  acceptable if tokens can be long-lived; local UDP is the fallback.
+- GoodWe network placement undecided (see open items). Build with **mock solar
+  data first**; real source added once the inverter exists.
 
 ## Design
 
@@ -54,7 +59,7 @@ requires a firmware release.
 | `GET /events` | existing panels | Exact port. Same optional `Authorization: Bearer` behaviour. |
 | `GET /solar` | debugging, future panels | Served from in-memory cache, never blocks on GoodWe. |
 | `GET /kitchen` | kitchen panel | `{calendar: <same as /events body>, solar: <same as /solar body or null>, server_time}` |
-| `GET /healthz` | monitoring | Reports age/status of calendar and solar sources. |
+| `GET /health` | monitoring | Public (as today). `{"status":"ok"}` plus calendar/solar source age and last error. |
 
 `/kitchen` accepts `?shift=1` (or equivalent) to return calendar for
 tomorrow/day-after in the today/tomorrow slots — used by the panel's 22:00
@@ -82,12 +87,10 @@ Proposed `/solar` body (builder may refine names; units are fixed):
 Interface with three implementations, selected by config:
 
 1. **fake** — realistic synthetic day curve. Default until the GoodWe is installed;
-   lets firmware be developed now.
-2. **sems** — SEMS cloud via the unofficial CrossLogin + monitor-detail API
-   (the OpenAPI is organization-accounts-only). Stores username/password in
-   config, re-logs-in automatically when the token expires.
-3. **local** — direct UDP to the inverter (port 8899, protocol as in the Python
-   `goodwe` library), only if the LXC can route to the GoodWe network.
+   lets firmware be developed now. **Only source built in this phase.**
+2. **sems** — SEMS+ cloud (see open items). Later.
+3. **local** — direct UDP 8899 / Modbus TCP to the inverter (protocol as in the
+   Python `goodwe` library). Later; preferred real source.
 
 A background poller (default every 60 s) fills the cache. If the source fails,
 the last value is served with `stale: true` and its original `updated_at`.
@@ -127,5 +130,12 @@ months later should understand the system without reading code.
 
 ## Open items
 
-- Confirm SEMS token lifetime and rate limits once the account exists.
-- Decide whether the LXC can reach the GoodWe WiFi (enables `local` source).
+- **SEMS (Nov 2026 finding):** GoodWe retired the legacy SEMS portal in Sep 2026;
+  legacy monitor endpoints return empty data and SEMS+ (signed requests) is still
+  in flux for battery/meter data. Cloud is therefore the *fallback*, local the
+  preferred real source. Neither is built until the inverter exists — this
+  phase ships with `fake` only, behind the `Source` interface.
+- **Network (decide at install):** Swisscom Internet-Box 5 Pro guest WiFi
+  (10.x) is isolated from the main LAN (192.168.x) with no known per-rule
+  exception. Options: GoodWe on main WiFi + local source; GoodWe on guest +
+  SEMS+; or own VLAN-capable gear.
