@@ -32,6 +32,18 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestNonPositiveValuesRejected(t *testing.T) {
+	for _, key := range []string{"port", "max_events", "kitchen_max_events", "cache_ttl_seconds", "solar_poll_seconds"} {
+		for _, v := range []string{"0", "-1"} {
+			p := writeFile(t, `{"icloud_username":"u","icloud_app_password":"p","`+key+`":`+v+`}`)
+			_, err := Load([]string{"--config", p}, noEnv)
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("%s=%s: expected error mentioning key, got %v", key, v, err)
+			}
+		}
+	}
+}
+
 func TestEnvOverridesFile(t *testing.T) {
 	p := writeFile(t, `{"icloud_username":"u","icloud_app_password":"p","port":3000,"api_token":"file"}`)
 	env := map[string]string{"PORT": "4000", "API_TOKEN": "env"}

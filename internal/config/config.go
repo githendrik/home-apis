@@ -107,6 +107,17 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	if c.ICloudAppPassword == "" {
 		return Config{}, fmt.Errorf("icloud_app_password is required (ICLOUD_APP_PASSWORD env var or config file)")
 	}
+	for _, p := range []struct {
+		name string
+		v    int
+	}{
+		{"port", c.Port}, {"max_events", c.MaxEvents}, {"kitchen_max_events", c.KitchenMaxEvents},
+		{"cache_ttl_seconds", c.CacheTTLSeconds}, {"solar_poll_seconds", c.SolarPollSeconds},
+	} {
+		if p.v <= 0 {
+			return Config{}, fmt.Errorf("%s must be > 0, got %d", p.name, p.v)
+		}
+	}
 	switch c.SolarSource {
 	case "fake":
 	default:

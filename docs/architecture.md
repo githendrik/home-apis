@@ -222,8 +222,32 @@ keep the last good snapshot and set `Status()` last error. `Latest()` returns
 
 ## Deployment
 
-_To be documented._
+Single static Go binary (`CGO_ENABLED=0`, linux/amd64, tzdata embedded), run by
+systemd in a Debian LXC under `/opt/home-apis` (binary, `config.json`, `VERSION`).
+The unit is `deploy/home-apis.service` (hardened: `NoNewPrivileges`,
+`ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=/opt/home-apis`).
+`main` wires `calendar.Service` (iCloud fetcher), a `solar.Poller` goroutine and
+`server.New` into an `http.Server` (`ReadHeaderTimeout` 5s) and shuts down
+gracefully on SIGTERM/SIGINT. Startup logs the version, calendar, TTL, max
+events, auth on/off and solar source. `--version` prints the build version.
+
+Releases: pushing a tag `v*` runs `.github/workflows/release.yml` (vet, test,
+static build with `-X main.version=<tag>`) and publishes `home-apis`,
+`home-apis.sha256` and `install.sh` as GitHub release assets.
 
 ## Operations
 
-_To be documented._
+- **Install / upgrade:** on the LXC as root,
+  `curl -fsSL https://github.com/githendrik/home-apis/releases/latest/download/install.sh | sh`.
+  It downloads the latest binary, writes `/opt/home-apis/VERSION`, creates
+  `config.json` only if missing (never overwrites), installs the unit and
+  enables + restarts the service. Edit `config.json` after the first install.
+- **Logs:** `journalctl -u home-apis -f`.
+- **Status:** `systemctl status home-apis`; `curl localhost:3000/health`.
+- **Version:** `/opt/home-apis/home-apis --version` or `cat /opt/home-apis/VERSION`.
+- **Rollback:** download the older binary
+  (`https://github.com/githendrik/home-apis/releases/download/<tag>/home-apis`)
+  to `/opt/home-apis/home-apis`, write the tag to `VERSION`, and
+  `systemctl restart home-apis`.
+- **Config validation:** `port`, `max_events`, `kitchen_max_events`,
+  `cache_ttl_seconds` and `solar_poll_seconds` must be > 0, else startup fails.

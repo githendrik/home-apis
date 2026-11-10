@@ -1,0 +1,22 @@
+[Unit]
+Description=home-apis (calendar + solar API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/home-apis/home-apis --config /opt/home-apis/config.json
+WorkingDirectory=/opt/home-apis
+Restart=on-failure
+RestartSec=10
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/
+ReadWritePaths=/opt/home-apis
+
+[Install]
+WantedBy=multi-user.target
