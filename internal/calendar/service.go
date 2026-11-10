@@ -38,6 +38,8 @@ type Service struct {
 	loc     *time.Location
 	now     func() time.Time
 
+	coldTimeout time.Duration // bounds a cold fetch; overridable in tests
+
 	coldMu sync.Mutex // serialises cold-cache fetches
 	bg     sync.WaitGroup
 
@@ -53,7 +55,7 @@ type Service struct {
 }
 
 func NewService(f Fetcher, ttl time.Duration, loc *time.Location, now func() time.Time) *Service {
-	return &Service{fetcher: f, ttl: ttl, loc: loc, now: now}
+	return &Service{fetcher: f, ttl: ttl, loc: loc, now: now, coldTimeout: refreshTimeout}
 }
 
 func (s *Service) startOfToday(now time.Time) time.Time {
@@ -73,7 +75,9 @@ func (s *Service) Get(ctx context.Context, shift, maxEvents int) (Response, erro
 	if resp, ok := s.warm(shift, maxEvents); ok { // filled while we waited
 		return resp, nil
 	}
-	if err := s.refresh(ctx); err != nil {
+	cctx, cancel := context.WithTimeout(ctx, s.coldTimeout)
+	defer cancel()
+	if err := s.refresh(cctx); err != nil {
 		return Response{}, err
 	}
 	resp, _ := s.warm(shift, maxEvents)

@@ -150,8 +150,9 @@ Absent or `null` keys use the default.
 into concrete occurrences overlapping a window `[from, to)`, all in the
 configured timezone. Supported: `DTSTART`/`DTEND`/`DURATION` with `TZID`, UTC
 (`Z`) and floating times (read in the configured zone), all-day (`VALUE=DATE`,
-exclusive end), and the full `RRULE` feature set of `rrule-go` plus `RDATE` and
-`EXDATE`. Per-instance changes (`RECURRENCE-ID` overrides with the same `UID`)
+exclusive end), and the full `RRULE` feature set of `rrule-go` plus `EXDATE`,
+and `RDATE` only alongside an `RRULE` (RDATE-only events without an `RRULE` are
+not expanded). Per-instance changes (`RECURRENCE-ID` overrides with the same `UID`)
 replace the generated instance. `STATUS:CANCELLED` events are skipped; missing
 `SUMMARY` becomes `Untitled`. Not supported: `RANGE=THISANDFUTURE` overrides,
 custom `VTIMEZONE` definitions (only IANA `TZID`s). Day grouping is done by

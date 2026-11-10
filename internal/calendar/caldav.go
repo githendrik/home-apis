@@ -21,6 +21,7 @@ import (
 const (
 	icloudHost     = "caldav.icloud.com"
 	icloudEndpoint = "https://" + icloudHost + "/"
+	httpTimeout    = 30 * time.Second
 )
 
 type icloudFetcher struct {
@@ -65,6 +66,11 @@ func (f *icloudFetcher) Fetch(ctx context.Context, from, to time.Time) ([]*ical.
 		},
 	})
 	if err != nil {
+		// Drop cached discovery so the next attempt rediscovers (rotated
+		// password, moved calendar).
+		f.mu.Lock()
+		f.client, f.calendarPath = nil, ""
+		f.mu.Unlock()
 		return nil, fmt.Errorf("caldav query: %w", err)
 	}
 	cals := make([]*ical.Calendar, 0, len(objs))
@@ -77,7 +83,7 @@ func (f *icloudFetcher) Fetch(ctx context.Context, from, to time.Time) ([]*ical.
 }
 
 func (f *icloudFetcher) discover(ctx context.Context) (*caldav.Client, string, error) {
-	rec := &hrefRecorder{inner: webdav.HTTPClientWithBasicAuth(http.DefaultClient, f.username, f.password)}
+	rec := &hrefRecorder{inner: webdav.HTTPClientWithBasicAuth(&http.Client{Timeout: httpTimeout}, f.username, f.password)}
 	c, err := caldav.NewClient(rec, icloudEndpoint)
 	if err != nil {
 		return nil, "", err
