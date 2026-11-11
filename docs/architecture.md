@@ -190,8 +190,17 @@ answers the home-set with an absolute URL on a shard host
 (`pNN-caldav.icloud.com`); go-webdav drops the host, so the raw PROPFIND
 response is inspected and a new client is created for that host.
 
-`home-apis --dump-events` (hidden debug flag) fetches once and prints the
-`/events` JSON.
+The `calendar-query` REPORT itself is sent by our own code (`reportCalendar`),
+not by go-webdav: go-webdav always requests *partial* calendar data
+(`<c:calendar-data><c:comp …>`), and iCloud answers that with empty
+`BEGIN:VCALENDAR/END:VCALENDAR` shells (or VEVENTs without properties). We ask
+for plain `<c:calendar-data/>`, like the old Deno service, and parse the
+multistatus response ourselves.
+
+`home-apis --dump-events` (hidden debug flag) fetches once with debug logging
+(query window, objects returned, occurrences per UID) and prints the `/events`
+JSON. Run it in the container:
+`/opt/home-apis/home-apis -c /opt/home-apis/config.json --dump-events`.
 
 ## Solar
 

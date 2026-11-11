@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/emersion/go-ical"
-	"github.com/emersion/go-webdav/caldav"
 )
 
 type ctxBlockFetcher struct{}
@@ -44,18 +43,14 @@ func TestFetchFailureResetsDiscovery(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := caldav.NewClient(srv.Client(), srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := &icloudFetcher{client: client, calendarPath: "/cal/"}
+	f := &icloudFetcher{httpc: srv.Client(), base: srv.URL, calendarPath: "/cal/"}
 	now := time.Now()
 	if _, err := f.Fetch(context.Background(), now, now.Add(time.Hour)); err == nil {
 		t.Fatal("expected query error")
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.client != nil || f.calendarPath != "" {
+	if f.httpc != nil || f.base != "" || f.calendarPath != "" {
 		t.Fatal("discovery cache not reset after failure")
 	}
 }

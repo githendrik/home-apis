@@ -3,6 +3,7 @@ package calendar
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,7 +29,8 @@ type icloudFetcher struct {
 	username, password, calendarName string
 
 	mu           sync.Mutex
-	client       *caldav.Client // set after first successful discovery
+	httpc        webdav.HTTPClient // authenticated client, set after first successful discovery
+	base         string            // scheme://host of the calendar home (iCloud partition host)
 	calendarPath string
 }
 
@@ -40,61 +42,101 @@ func NewICloudFetcher(username, appPassword, calendarName string) Fetcher {
 
 func (f *icloudFetcher) Fetch(ctx context.Context, from, to time.Time) ([]*ical.Calendar, error) {
 	f.mu.Lock()
-	client, path := f.client, f.calendarPath
+	httpc, base, path := f.httpc, f.base, f.calendarPath
 	f.mu.Unlock()
 
-	if client == nil {
+	if httpc == nil {
 		var err error
-		client, path, err = f.discover(ctx)
+		httpc, base, path, err = f.discover(ctx)
 		if err != nil {
 			return nil, err
 		}
 		f.mu.Lock()
-		f.client, f.calendarPath = client, path
+		f.httpc, f.base, f.calendarPath = httpc, base, path
 		f.mu.Unlock()
 	}
 
-	objs, err := client.QueryCalendar(ctx, path, &caldav.CalendarQuery{
-		CompRequest: caldav.CalendarCompRequest{
-			Name:     "VCALENDAR",
-			AllProps: true,
-			Comps:    []caldav.CalendarCompRequest{{Name: "VEVENT", AllProps: true}},
-		},
-		CompFilter: caldav.CompFilter{
-			Name:  "VCALENDAR",
-			Comps: []caldav.CompFilter{{Name: "VEVENT", Start: from, End: to}},
-		},
-	})
+	cals, err := reportCalendar(ctx, httpc, base+path, from, to)
 	if err != nil {
 		// Drop cached discovery so the next attempt rediscovers (rotated
 		// password, moved calendar).
 		f.mu.Lock()
-		f.client, f.calendarPath = nil, ""
+		f.httpc, f.base, f.calendarPath = nil, "", ""
 		f.mu.Unlock()
 		return nil, fmt.Errorf("caldav query: %w", err)
 	}
-	cals := make([]*ical.Calendar, 0, len(objs))
-	for _, o := range objs {
-		if o.Data != nil {
-			cals = append(cals, o.Data)
+	slog.Debug("caldav query", "from", from, "to", to, "calendars", len(cals))
+	return cals, nil
+}
+
+// reportCalendar runs a CalDAV calendar-query asking for plain
+// <calendar-data/>. go-webdav always sends a partial-data <comp> request,
+// which iCloud answers with empty VCALENDAR shells.
+func reportCalendar(ctx context.Context, httpc webdav.HTTPClient, calURL string, from, to time.Time) ([]*ical.Calendar, error) {
+	const layout = "20060102T150405Z"
+	body := `<?xml version="1.0" encoding="utf-8"?>` +
+		`<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">` +
+		`<d:prop><d:getetag/><c:calendar-data/></d:prop>` +
+		`<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">` +
+		`<c:time-range start="` + from.UTC().Format(layout) + `" end="` + to.UTC().Format(layout) + `"/>` +
+		`</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`
+	req, err := http.NewRequestWithContext(ctx, "REPORT", calURL, strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
+	req.Header.Set("Depth", "1")
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMultiStatus {
+		return nil, fmt.Errorf("REPORT %s: %s", calURL, resp.Status)
+	}
+	var ms struct {
+		Responses []struct {
+			Propstats []struct {
+				CalendarData string `xml:"prop>calendar-data"`
+			} `xml:"propstat"`
+		} `xml:"response"`
+	}
+	if err := xml.NewDecoder(resp.Body).Decode(&ms); err != nil {
+		return nil, fmt.Errorf("decode multistatus: %w", err)
+	}
+	var cals []*ical.Calendar
+	for _, r := range ms.Responses {
+		for _, ps := range r.Propstats {
+			if strings.TrimSpace(ps.CalendarData) == "" {
+				continue
+			}
+			cal, err := ical.NewDecoder(strings.NewReader(ps.CalendarData)).Decode()
+			if err != nil {
+				slog.Warn("skipping undecodable calendar object", "reason", err)
+				continue
+			}
+			cals = append(cals, cal)
 		}
 	}
 	return cals, nil
 }
 
-func (f *icloudFetcher) discover(ctx context.Context) (*caldav.Client, string, error) {
+// discover finds the calendar and returns an authenticated HTTP client, the
+// base URL (scheme://host) of the calendar home, and the calendar path.
+func (f *icloudFetcher) discover(ctx context.Context) (webdav.HTTPClient, string, string, error) {
 	rec := &hrefRecorder{inner: webdav.HTTPClientWithBasicAuth(&http.Client{Timeout: httpTimeout}, f.username, f.password)}
+	base := "https://" + icloudHost
 	c, err := caldav.NewClient(rec, icloudEndpoint)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	principal, err := c.FindCurrentUserPrincipal(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("find principal: %w", err)
+		return nil, "", "", fmt.Errorf("find principal: %w", err)
 	}
 	home, err := c.FindCalendarHomeSet(ctx, principal)
 	if err != nil {
-		return nil, "", fmt.Errorf("find calendar home: %w", err)
+		return nil, "", "", fmt.Errorf("find calendar home: %w", err)
 	}
 
 	// go-webdav keeps only the path of the home-set href, but iCloud returns an
@@ -102,28 +144,29 @@ func (f *icloudFetcher) discover(ctx context.Context) (*caldav.Client, string, e
 	// recorded from the raw response for all further requests.
 	if host := rec.homeSetHost(); host != "" && strings.TrimSuffix(host, ":443") != icloudHost {
 		slog.Info("calendar home on different host", "host", host)
-		c, err = caldav.NewClient(rec, "https://"+host+"/")
+		base = "https://" + host
+		c, err = caldav.NewClient(rec, base+"/")
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 	}
 
 	cals, err := c.FindCalendars(ctx, home)
 	if err != nil {
-		return nil, "", fmt.Errorf("list calendars: %w", err)
+		return nil, "", "", fmt.Errorf("list calendars: %w", err)
 	}
 	want := strings.ToLower(strings.TrimSpace(f.calendarName))
 	for _, cal := range cals {
 		if strings.ToLower(strings.TrimSpace(cal.Name)) == want {
 			slog.Info("calendar discovered", "name", cal.Name, "path", cal.Path)
-			return c, cal.Path, nil
+			return rec, base, cal.Path, nil
 		}
 	}
 	names := make([]string, 0, len(cals))
 	for _, cal := range cals {
 		names = append(names, cal.Name)
 	}
-	return nil, "", fmt.Errorf("calendar %q not found (available: %v)", f.calendarName, names)
+	return nil, "", "", fmt.Errorf("calendar %q not found (available: %v)", f.calendarName, names)
 }
 
 var homeSetRe = regexp.MustCompile(`(?s)calendar-home-set[^>]*>\s*<(?:[\w-]+:)?href[^>]*>\s*([^<\s]+)\s*<`)

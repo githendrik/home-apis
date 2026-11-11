@@ -37,6 +37,7 @@ func Expand(cals []*ical.Calendar, from, to time.Time, loc *time.Location) ([]Oc
 				slog.Warn("skipping malformed event", "uid", uid, "reason", err)
 				continue
 			}
+			slog.Debug("expanded", "uid", uid, "events", len(byUID[uid]), "occurrences", len(occ))
 			out = append(out, occ...)
 		}
 	}

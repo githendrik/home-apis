@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -33,6 +34,7 @@ func main() {
 		os.Exit(1)
 	}
 	if dump {
+		slog.SetLogLoggerLevel(slog.LevelDebug)
 		if err := dumpEvents(cfg); err != nil {
 			fmt.Fprintln(os.Stderr, "dump-events:", err)
 			os.Exit(1)
