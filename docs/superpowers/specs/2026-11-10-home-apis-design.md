@@ -1,5 +1,8 @@
 # home-apis — design
 
+> **Historical (2026-11-10).** Original design. Current state: `docs/status.md`,
+> `docs/decisions.md`, `docs/architecture.md`.
+
 Date: 2026-11-10 · Status: draft for review · Repo: `githendrik/home-apis` ·
 Companion: `eink-kitchen-panel/docs/superpowers/specs/2026-11-10-kitchen-panel-firmware-design.md`
 

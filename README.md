@@ -48,4 +48,5 @@ curl -fsSL https://github.com/githendrik/home-apis/releases/latest/download/inst
 Then edit `/opt/home-apis/config.json`; logs via `journalctl -u home-apis -f`.
 Release: push a `v*` tag; CI publishes the binary, checksum and `install.sh`.
 
-See [docs/architecture.md](docs/architecture.md) and [AGENTS.md](AGENTS.md).
+Start with [AGENTS.md](AGENTS.md) → [docs/status.md](docs/status.md),
+[docs/decisions.md](docs/decisions.md), [docs/architecture.md](docs/architecture.md).
