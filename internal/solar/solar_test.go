@@ -202,3 +202,70 @@ func TestPollerRunPollsImmediatelyAndStops(t *testing.T) {
 		t.Fatal("Run did not stop")
 	}
 }
+
+type historySrc struct {
+	scriptSrc
+	calls    int
+	histFail bool
+	hist     History
+}
+
+func (h *historySrc) History(context.Context) (History, error) {
+	h.calls++
+	if h.histFail {
+		return History{}, errors.New("hist boom")
+	}
+	return h.hist, nil
+}
+
+func TestPollerHistoryEveryFiveMinutes(t *testing.T) {
+	t0 := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	now := t0
+	src := &historySrc{scriptSrc: scriptSrc{snap: Snapshot{PVW: 1}}, hist: History{Date: "2026-11-26"}}
+	p := NewPoller(src, time.Minute, func() time.Time { return now })
+	for m := 0; m <= 11; m++ {
+		now = t0.Add(time.Duration(m) * time.Minute)
+		p.pollOnce(context.Background())
+	}
+	if src.calls != 3 {
+		t.Fatalf("history calls %d, want 3 (t=0, 5, 10 min)", src.calls)
+	}
+	h, ok := p.LatestHistory()
+	if !ok || h.Date != "2026-11-26" {
+		t.Fatalf("LatestHistory %+v %v", h, ok)
+	}
+	last, errStr := p.HistoryStatus()
+	if !last.Equal(t0.Add(10*time.Minute)) || errStr != "" {
+		t.Fatalf("status %v %q", last, errStr)
+	}
+}
+
+func TestPollerHistoryFailureKeepsLast(t *testing.T) {
+	t0 := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	now := t0
+	src := &historySrc{scriptSrc: scriptSrc{snap: Snapshot{PVW: 1}}, hist: History{Date: "2026-11-26", PVWh: 42}}
+	p := NewPoller(src, time.Minute, func() time.Time { return now })
+	p.pollOnce(context.Background())
+	src.histFail = true
+	now = t0.Add(5 * time.Minute)
+	p.pollOnce(context.Background())
+	h, ok := p.LatestHistory()
+	if !ok || h.PVWh != 42 {
+		t.Fatalf("kept history %+v %v", h, ok)
+	}
+	last, errStr := p.HistoryStatus()
+	if !last.Equal(t0) || errStr != "hist boom" {
+		t.Fatalf("status %v %q", last, errStr)
+	}
+	if _, ok := p.Latest(); !ok {
+		t.Fatal("snapshot must not be affected")
+	}
+}
+
+func TestPollerWithoutHistorySource(t *testing.T) {
+	p := NewPoller(&scriptSrc{snap: Snapshot{PVW: 1}}, time.Minute, time.Now)
+	p.pollOnce(context.Background())
+	if _, ok := p.LatestHistory(); ok {
+		t.Fatal("expected no history")
+	}
+}
