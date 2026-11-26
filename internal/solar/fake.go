@@ -25,23 +25,8 @@ func (f *fake) Read(ctx context.Context) (Snapshot, error) {
 	now := f.now()
 	t := now.In(f.loc)
 	h := float64(t.Hour()) + float64(t.Minute())/60 + float64(t.Second())/3600
-
-	// s: +1 at the June solstice, -1 at the December solstice.
-	s := math.Cos(2 * math.Pi * float64(t.YearDay()-172) / 365)
-	sunrise := 6.833 - 1.333*s
-	sunset := 19.033 + 2.3*s
-	peak := 4500 + 2000*s
-
-	pv := 0.0
-	if h > sunrise && h < sunset {
-		pv = peak * math.Sin(math.Pi*(h-sunrise)/(sunset-sunrise))
-	}
-
-	bump := func(centre float64) float64 {
-		d := (h - centre) * 60
-		return 900 * math.Exp(-d*d/(2*45*45))
-	}
-	load := 350 + bump(7) + bump(18.5)
+	pv := fakePV(h, t.YearDay())
+	load := fakeLoad(h)
 
 	soc := socAt(h)
 
@@ -64,6 +49,46 @@ func (f *fake) Read(ctx context.Context) (Snapshot, error) {
 		UpdatedAt:  now.UTC(),
 		Source:     "fake",
 	}, nil
+}
+
+// fakePV: watts at local hour h on day-of-year yday.
+func fakePV(h float64, yday int) float64 {
+	// s: +1 at the June solstice, -1 at the December solstice.
+	s := math.Cos(2 * math.Pi * float64(yday-172) / 365)
+	sunrise := 6.833 - 1.333*s
+	sunset := 19.033 + 2.3*s
+	peak := 4500 + 2000*s
+	if h <= sunrise || h >= sunset {
+		return 0
+	}
+	return peak * math.Sin(math.Pi*(h-sunrise)/(sunset-sunrise))
+}
+
+// fakeLoad: watts at local hour h.
+func fakeLoad(h float64) float64 {
+	bump := func(centre float64) float64 {
+		d := (h - centre) * 60
+		return 900 * math.Exp(-d*d/(2*45*45))
+	}
+	return 350 + bump(7) + bump(18.5)
+}
+
+// History: per-minute fake points from local midnight until now.
+func (f *fake) History(ctx context.Context) (History, error) {
+	now := f.now()
+	t := now.In(f.loc)
+	midnight := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, f.loc)
+	var pv, load []MinutePoint
+	for m := midnight; m.Before(now); m = m.Add(time.Minute) {
+		lm := m.In(f.loc)
+		h := float64(lm.Hour()) + float64(lm.Minute())/60
+		pv = append(pv, MinutePoint{At: m, W: fakePV(h, lm.YearDay())})
+		load = append(load, MinutePoint{At: m, W: fakeLoad(h)})
+	}
+	hist := History{Date: t.Format("2006-01-02"), UpdatedAt: now}
+	hist.PV, hist.PVWh = BuildHistory(pv, now, f.loc, now)
+	hist.Load, hist.LoadWh = BuildHistory(load, now, f.loc, now)
+	return hist, nil
 }
 
 // socAt: 20 % at 06:00 rising to 95 % at 15:00, then falling to 20 % by 06:00.

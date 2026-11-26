@@ -75,6 +75,37 @@ func TestFakeShowsImportAtEvening(t *testing.T) {
 	}
 }
 
+func TestFakeHistory(t *testing.T) {
+	loc := zurich(t)
+	now := time.Date(2026, 6, 21, 13, 0, 0, 0, loc)
+	src := NewFake(func() time.Time { return now }, loc)
+	hs, ok := src.(HistorySource)
+	if !ok {
+		t.Fatal("fake source does not implement HistorySource")
+	}
+	h, err := hs.History(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Date != "2026-06-21" || len(h.PV) != 84 || len(h.Load) != 84 || h.PVWh <= 0 || h.LoadWh <= 0 {
+		t.Fatalf("unexpected history: date=%s bins=%d/%d pvWh=%d loadWh=%d", h.Date, len(h.PV), len(h.Load), h.PVWh, h.LoadWh)
+	}
+	peak := 0
+	for _, b := range h.PV {
+		peak = max(peak, b.W)
+	}
+	if peak < 6000 {
+		t.Fatalf("PV peak %d W, want >= 6000 at the June solstice", peak)
+	}
+	h2, _ := hs.History(context.Background())
+	if h2.PVWh != h.PVWh || h2.PV[50] != h.PV[50] {
+		t.Fatal("not deterministic")
+	}
+	if !h.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt %v", h.UpdatedAt)
+	}
+}
+
 func TestFakeName(t *testing.T) {
 	src := NewFake(time.Now, time.UTC)
 	s, _ := src.Read(context.Background())
