@@ -84,12 +84,91 @@ func (s *sems) Read(ctx context.Context) (Snapshot, error) {
 	defer s.mu.Unlock()
 
 	now := s.opts.Now()
-	if now.Before(s.waitUntil) {
-		return Snapshot{}, fmt.Errorf("sems: %s, next attempt after %s",
-			s.waitReason, s.waitUntil.UTC().Format(time.RFC3339))
+	if err := s.waitErr(now); err != nil {
+		return Snapshot{}, err
 	}
 
-	flow, err := s.readFlow(ctx)
+	var flow map[string]any
+	err := s.withSession(ctx, func() error {
+		path := "/sems-plant/api/stations/flow?stationId=" + url.QueryEscape(s.station)
+		if err := s.call(ctx, http.MethodGet, s.api+path, nil, s.authHeaders(), &flow); err != nil {
+			return fmt.Errorf("sems flow: %w", err)
+		}
+		return nil
+	})
+	s.noteWait(now, err)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return s.snapshot(flow, now)
+}
+
+// History reads today's per-minute production and consumption curve and bins it.
+func (s *sems) History(ctx context.Context) (History, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.opts.Now()
+	if err := s.waitErr(now); err != nil {
+		return History{}, err
+	}
+	day := now.In(s.opts.Loc).Format("2006-01-02")
+	var resp struct {
+		DataList []struct {
+			Item      string `json:"item"`
+			PowerData []struct {
+				Tp    string `json:"tp"`
+				Power any    `json:"power"`
+			} `json:"powerData"`
+		} `json:"dataList"`
+	}
+	err := s.withSession(ctx, func() error {
+		body := map[string]any{
+			"stationId": s.station, "items": []string{"pSystem", "pConsum"},
+			"timeScale": 1, "timeZone": 1,
+			"startTime": day + " 00:00:00", "endTime": day + " 23:59:59",
+			"needDispatchLimit": true,
+		}
+		if err := s.call(ctx, http.MethodPost, s.api+"/sems-plant/api/v1/hems/power/statisticsAndPreV2", body, s.authHeaders(), &resp); err != nil {
+			return fmt.Errorf("sems history: %w", err)
+		}
+		return nil
+	})
+	s.noteWait(now, err)
+	if err != nil {
+		return History{}, err
+	}
+
+	series := map[string][]MinutePoint{}
+	for _, d := range resp.DataList {
+		for _, p := range d.PowerData {
+			kw, ok := semsNumber(map[string]any{"v": p.Power}, "v")
+			if !ok {
+				continue
+			}
+			t, err := time.ParseInLocation("2006-01-02 15:04:05", p.Tp, s.opts.Loc)
+			if err != nil {
+				continue
+			}
+			series[d.Item] = append(series[d.Item], MinutePoint{At: t, W: kw * 1000})
+		}
+	}
+	h := History{Date: day, UpdatedAt: now}
+	h.PV, h.PVWh = BuildHistory(series["pSystem"], now, s.opts.Loc, now)
+	h.Load, h.LoadWh = BuildHistory(series["pConsum"], now, s.opts.Loc, now)
+	return h, nil
+}
+
+func (s *sems) waitErr(now time.Time) error {
+	if now.Before(s.waitUntil) {
+		return fmt.Errorf("sems: %s, next attempt after %s",
+			s.waitReason, s.waitUntil.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// noteWait pauses all SEMS calls after a rejected login or a rate limit.
+func (s *sems) noteWait(now time.Time, err error) {
 	var rejected *semsLoginRejected
 	switch {
 	case errors.As(err, &rejected):
@@ -97,46 +176,38 @@ func (s *sems) Read(ctx context.Context) (Snapshot, error) {
 	case errors.Is(err, errSemsRateLimited):
 		s.wait(now, semsRateLimitWait, "rate limited")
 	}
-	if err != nil {
-		return Snapshot{}, err
-	}
-	return s.snapshot(flow, now)
 }
 
 func (s *sems) wait(now time.Time, d time.Duration, reason string) {
 	s.waitUntil, s.waitReason = now.Add(d), reason
 }
 
-// readFlow logs in and discovers the station when needed, and logs in again
-// once if the token has expired.
-func (s *sems) readFlow(ctx context.Context) (map[string]any, error) {
+// withSession logs in and discovers the station when needed, runs fn, and
+// logs in again once if the token has expired.
+func (s *sems) withSession(ctx context.Context, fn func() error) error {
 	for attempt := 0; ; attempt++ {
-		flow, err := s.tryReadFlow(ctx)
+		err := s.ensureSession(ctx)
+		if err == nil {
+			err = fn()
+		}
 		if errors.Is(err, errSemsTokenExpired) && attempt == 0 {
 			s.tokenJSON = ""
 			continue
 		}
-		return flow, err
+		return err
 	}
 }
 
-func (s *sems) tryReadFlow(ctx context.Context) (map[string]any, error) {
+func (s *sems) ensureSession(ctx context.Context) error {
 	if s.tokenJSON == "" {
 		if err := s.login(ctx); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if s.station == "" {
-		if err := s.discoverStation(ctx); err != nil {
-			return nil, err
-		}
+		return s.discoverStation(ctx)
 	}
-	var flow map[string]any
-	path := "/sems-plant/api/stations/flow?stationId=" + url.QueryEscape(s.station)
-	if err := s.call(ctx, http.MethodGet, s.api+path, nil, s.authHeaders(), &flow); err != nil {
-		return nil, fmt.Errorf("sems flow: %w", err)
-	}
-	return flow, nil
+	return nil
 }
 
 type semsLoginRejected struct{ code, desc string }

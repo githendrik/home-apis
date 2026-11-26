@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -38,6 +39,9 @@ type fakeSems struct {
 	stations      []string
 	flow          map[string]any
 	badSignatures int
+	statsCalls    int
+	statsCodes    []string // consumed one per statistics call; "" = success
+	statsBody     map[string]any
 }
 
 func newFakeSems(t *testing.T) *fakeSems {
@@ -55,6 +59,7 @@ func newFakeSems(t *testing.T) *fakeSems {
 	mux.HandleFunc("POST /web/sems/sems-user/api/v1/auth/cross-login", f.login)
 	mux.HandleFunc("POST /gw/sems-plant/api/portal/stations/page", f.stationsPage)
 	mux.HandleFunc("GET /gw/sems-plant/api/stations/flow", f.stationFlow)
+	mux.HandleFunc("POST /gw/sems-plant/api/v1/hems/power/statisticsAndPreV2", f.statistics)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -167,6 +172,39 @@ func (f *fakeSems) stationFlow(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeSems(w, "00000", f.flow)
+}
+
+// statistics serves today's curve: 06:00-06:14 at pSystem 1.2 kW and
+// pConsum 0.5 kW (date taken from the request), plus the end-of-day sentinel.
+func (f *fakeSems) statistics(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statsCalls++
+	if !f.authorised(r) {
+		writeSems(w, "C0602", nil)
+		return
+	}
+	json.NewDecoder(r.Body).Decode(&f.statsBody)
+	if len(f.statsCodes) > 0 {
+		code := f.statsCodes[0]
+		f.statsCodes = f.statsCodes[1:]
+		if code != "" {
+			writeSems(w, code, nil)
+			return
+		}
+	}
+	day := strings.Fields(fmt.Sprint(f.statsBody["startTime"]))[0]
+	series := func(item string, kw float64) map[string]any {
+		var pts []map[string]any
+		for m := 0; m < 15; m++ {
+			pts = append(pts, map[string]any{"tp": fmt.Sprintf("%s 06:%02d:00", day, m), "power": kw})
+		}
+		pts = append(pts, map[string]any{"tp": day + " 23:59:00", "power": nil, "isCE": true})
+		return map[string]any{"item": item, "unit": "kW", "powerData": pts}
+	}
+	writeSems(w, "00000", map[string]any{"dataList": []any{
+		series("pSystem", 1.2), series("pConsum", 0.5),
+	}})
 }
 
 type testClock struct {
@@ -391,5 +429,90 @@ func TestSemsAcceptsNumericStrings(t *testing.T) {
 	}
 	if got.LoadW != 500 {
 		t.Fatalf("LoadW=%d, want 500", got.LoadW)
+	}
+}
+
+func semsHistory(t *testing.T, src Source) (History, error) {
+	t.Helper()
+	hs, ok := src.(HistorySource)
+	if !ok {
+		t.Fatal("sems source does not implement HistorySource")
+	}
+	return hs.History(context.Background())
+}
+
+// 06:15 Zurich on 2026-11-26.
+func setMorning(c *testClock) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = time.Date(2026, 11, 26, 5, 15, 0, 0, time.UTC)
+}
+
+func TestSemsHistoryBinsBothSeries(t *testing.T) {
+	f := newFakeSems(t)
+	src, clock := newTestSems(t, f, semsTestPassword)
+	setMorning(clock)
+
+	h, err := semsHistory(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Date != "2026-11-26" || len(h.PV) != 3 || len(h.Load) != 3 {
+		t.Fatalf("history %+v", h)
+	}
+	for i := range 3 {
+		if h.PV[i] != (Bin{1200, true}) || h.Load[i] != (Bin{500, true}) {
+			t.Fatalf("bin %d: pv %+v load %+v", i, h.PV[i], h.Load[i])
+		}
+	}
+	if h.PVWh != 300 || h.LoadWh != 125 { // 15 min at 1.2 kW / 0.5 kW
+		t.Fatalf("wh pv=%d load=%d", h.PVWh, h.LoadWh)
+	}
+	if !h.UpdatedAt.Equal(clock.now()) {
+		t.Fatalf("UpdatedAt %v", h.UpdatedAt)
+	}
+	b := f.statsBody
+	if b["stationId"] != semsTestStation || b["startTime"] != "2026-11-26 00:00:00" || b["endTime"] != "2026-11-26 23:59:59" {
+		t.Fatalf("request body %+v", b)
+	}
+	items := fmt.Sprint(b["items"])
+	if !strings.Contains(items, "pSystem") || !strings.Contains(items, "pConsum") {
+		t.Fatalf("items %v", items)
+	}
+	if f.badSignatures != 0 {
+		t.Fatalf("%d bad signatures", f.badSignatures)
+	}
+}
+
+func TestSemsHistoryRateLimitPausesFlow(t *testing.T) {
+	f := newFakeSems(t)
+	src, clock := newTestSems(t, f, semsTestPassword)
+	f.statsCodes = []string{"GY0429"}
+	if _, err := semsHistory(t, src); err == nil {
+		t.Fatal("expected error")
+	}
+	clock.add(4 * time.Minute)
+	if _, err := src.Read(context.Background()); err == nil {
+		t.Fatal("expected Read to wait after a rate-limited history call")
+	}
+	if f.flowCalls != 0 {
+		t.Fatalf("flowCalls=%d during wait, want 0", f.flowCalls)
+	}
+}
+
+func TestSemsHistoryReloginOnExpiry(t *testing.T) {
+	f := newFakeSems(t)
+	src, clock := newTestSems(t, f, semsTestPassword)
+	setMorning(clock)
+	if _, err := src.Read(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.statsCodes = []string{"C0602"}
+	h, err := semsHistory(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.PV) != 3 || f.logins != 2 {
+		t.Fatalf("bins=%d logins=%d, want 3/2", len(h.PV), f.logins)
 	}
 }
