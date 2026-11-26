@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,12 +30,22 @@ func (f *fakeCal) Get(_ context.Context, shift, max int) (calendar.Response, err
 func (f *fakeCal) Status() calendar.Status { return f.status }
 
 type fakeSolar struct {
-	snap solar.Snapshot
-	ok   bool
+	snap     solar.Snapshot
+	ok       bool
+	hist     *solar.History
+	histLast time.Time
+	histErr  string
 }
 
 func (f *fakeSolar) Latest() (solar.Snapshot, bool) { return f.snap, f.ok }
 func (f *fakeSolar) Status() (time.Time, string)    { return time.Time{}, "" }
+func (f *fakeSolar) LatestHistory() (solar.History, bool) {
+	if f.hist == nil {
+		return solar.History{}, false
+	}
+	return *f.hist, true
+}
+func (f *fakeSolar) HistoryStatus() (time.Time, string) { return f.histLast, f.histErr }
 
 var zurich, _ = time.LoadLocation("Europe/Zurich")
 
@@ -83,7 +94,7 @@ func TestHealthPublic(t *testing.T) {
 }
 
 func TestAuthRequired(t *testing.T) {
-	h := newH("s", &fakeCal{resp: sampleResp()}, &fakeSolar{snap(), true})
+	h := newH("s", &fakeCal{resp: sampleResp()}, &fakeSolar{snap: snap(), ok: true})
 	for _, p := range []string{"/events", "/solar", "/kitchen", "/nope"} {
 		w := do(h, p, "")
 		if w.Code != 401 || w.Body.String() != `{"error":"Unauthorized"}` {
@@ -135,7 +146,7 @@ func TestEvents502(t *testing.T) {
 }
 
 func TestSolar(t *testing.T) {
-	w := do(newH("", &fakeCal{}, &fakeSolar{snap(), true}), "/solar", "")
+	w := do(newH("", &fakeCal{}, &fakeSolar{snap: snap(), ok: true}), "/solar", "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "\n  \"pv_w\": 1000,") {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
@@ -153,7 +164,7 @@ func TestSolarNoData(t *testing.T) {
 
 func TestKitchenCombined(t *testing.T) {
 	cal := &fakeCal{resp: sampleResp()}
-	w := do(newH("", cal, &fakeSolar{snap(), true}), "/kitchen?shift=1", "")
+	w := do(newH("", cal, &fakeSolar{snap: snap(), ok: true}), "/kitchen?shift=1", "")
 	if w.Code != 200 {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
@@ -162,11 +173,11 @@ func TestKitchenCombined(t *testing.T) {
 	}
 	b := w.Body.String()
 	for _, s := range []string{
-		"{\n  \"calendar\": {\n    \"today\": {",
-		"\"fetched_at\": \"2026-11-10T14:22:03.721Z\"",
-		"\"summary\": \"A & B\"",
-		"\"solar\": {\n    \"pv_w\": 1000,",
-		"\"server_time\": \"2026-11-10T22:05:00+01:00\"\n}",
+		"{\"calendar\":{\"today\":{",
+		"\"fetched_at\":\"2026-11-10T14:22:03.721Z\"",
+		"\"summary\":\"A & B\"",
+		"\"solar\":{\"pv_w\":1000,",
+		"\"server_time\":\"2026-11-10T22:05:00+01:00\"}",
 	} {
 		if !strings.Contains(b, s) {
 			t.Fatalf("missing %q in %s", s, b)
@@ -182,13 +193,13 @@ func TestKitchenCombined(t *testing.T) {
 
 func TestKitchenSolarNull(t *testing.T) {
 	w := do(newH("", &fakeCal{resp: sampleResp()}, &fakeSolar{}), "/kitchen", "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"solar": null`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"solar":null`) {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }
 
 func TestKitchenCalendarError(t *testing.T) {
-	w := do(newH("", &fakeCal{err: errors.New("boom")}, &fakeSolar{snap(), true}), "/kitchen", "")
+	w := do(newH("", &fakeCal{err: errors.New("boom")}, &fakeSolar{snap: snap(), ok: true}), "/kitchen", "")
 	if w.Code != 502 || w.Body.String() != `{"error":"boom"}` {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
@@ -209,5 +220,73 @@ func TestMethodNotAllowed(t *testing.T) {
 	newH("", &fakeCal{}, &fakeSolar{}).ServeHTTP(w, r)
 	if w.Code != 405 {
 		t.Fatal(w.Code)
+	}
+}
+
+func hist(date string) *solar.History {
+	return &solar.History{Date: date, PV: []solar.Bin{{W: 1200, OK: true}}, Load: []solar.Bin{{W: 500, OK: true}},
+		PVWh: 300, LoadWh: 125, UpdatedAt: time.Date(2026, 11, 10, 21, 0, 0, 0, time.UTC)}
+}
+
+// newH's clock is 2026-11-10 22:05 in Zurich.
+func TestKitchenIncludesTodaysHistory(t *testing.T) {
+	w := do(newH("", &fakeCal{resp: sampleResp()}, &fakeSolar{snap: snap(), ok: true, hist: hist("2026-11-10")}), "/kitchen", "")
+	b := w.Body.String()
+	if w.Code != 200 || !strings.Contains(b, "\"history\":{") || !strings.Contains(b, "\"step_min\":5") {
+		t.Fatalf("%d %s", w.Code, b)
+	}
+	if strings.Index(b, `"solar"`) > strings.Index(b, `"history"`) || strings.Index(b, `"history"`) > strings.Index(b, `"server_time"`) {
+		t.Fatal("key order")
+	}
+}
+
+func TestKitchenHistoryOtherDayOmitted(t *testing.T) {
+	w := do(newH("", &fakeCal{resp: sampleResp()}, &fakeSolar{snap: snap(), ok: true, hist: hist("2026-11-09")}), "/kitchen", "")
+	if w.Code != 200 || strings.Contains(w.Body.String(), `"history"`) {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func TestKitchenShiftNoHistory(t *testing.T) {
+	w := do(newH("", &fakeCal{resp: sampleResp()}, &fakeSolar{snap: snap(), ok: true, hist: hist("2026-11-10")}), "/kitchen?shift=1", "")
+	if w.Code != 200 || strings.Contains(w.Body.String(), `"history"`) {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func TestKitchenRealisticBodyFitsPanel(t *testing.T) {
+	title := strings.Repeat("Elternabend Schule ", 4)[:60]
+	var today, tomorrow []calendar.Event
+	for i := range 5 {
+		today = append(today, calendar.Event{Summary: title, Start: fmt.Sprintf("2026-11-10T%02d:00:00", 8+i), End: fmt.Sprintf("2026-11-10T%02d:30:00", 8+i)})
+		tomorrow = append(tomorrow, calendar.Event{Summary: title, Start: fmt.Sprintf("2026-11-11T%02d:00:00", 8+i), End: fmt.Sprintf("2026-11-11T%02d:30:00", 8+i)})
+	}
+	resp := calendar.Response{
+		Today:     calendar.Day{Label: "Today", Date: "2026-11-10", Events: today},
+		Tomorrow:  calendar.Day{Label: "Tomorrow", Date: "2026-11-11", Events: tomorrow},
+		FetchedAt: "2026-11-10T14:22:03.721Z",
+	}
+	h := &solar.History{Date: "2026-11-10", PVWh: 45678, LoadWh: 23456, UpdatedAt: time.Date(2026, 11, 10, 21, 0, 0, 0, time.UTC)}
+	for i := range 192 {
+		ok := i%10 != 3 // ~10 % missing
+		h.PV = append(h.PV, solar.Bin{W: 9900 - i*7, OK: ok})
+		h.Load = append(h.Load, solar.Bin{W: 12000 - i*11, OK: ok})
+	}
+	w := do(newH("", &fakeCal{resp: resp}, &fakeSolar{snap: snap(), ok: true, hist: h}), "/kitchen", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"history"`) {
+		t.Fatalf("%d", w.Code)
+	}
+	if n := w.Body.Len(); n > 4000 {
+		t.Fatalf("body %d bytes, panel keeps at most 4000", n)
+	} else {
+		t.Logf("realistic /kitchen body: %d bytes", n)
+	}
+}
+
+func TestHealthHistoryStatus(t *testing.T) {
+	last := time.Date(2026, 11, 10, 21, 0, 0, 0, time.UTC)
+	w := do(newH("", &fakeCal{}, &fakeSolar{histLast: last, histErr: "boom"}), "/health", "")
+	if !strings.Contains(w.Body.String(), `"history":{"last_success":"2026-11-10T21:00:00Z","last_error":"boom"}`) {
+		t.Fatalf("%s", w.Body)
 	}
 }

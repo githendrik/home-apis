@@ -143,11 +143,22 @@ func newSolarSource(cfg config.Config) solar.Source {
 func dumpSolar(cfg config.Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	snap, err := newSolarSource(cfg).Read(ctx)
+	src := newSolarSource(cfg)
+	snap, err := src.Read(ctx)
 	if err != nil {
 		return err
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	return enc.Encode(snap)
+	if err := enc.Encode(snap); err != nil {
+		return err
+	}
+	if hs, ok := src.(solar.HistorySource); ok {
+		h, err := hs.History(ctx)
+		if err != nil {
+			return fmt.Errorf("history: %w", err)
+		}
+		fmt.Printf("history: %s bins=%d pv_wh=%d load_wh=%d\n", h.Date, len(h.PV), h.PVWh, h.LoadWh)
+	}
+	return nil
 }

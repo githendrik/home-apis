@@ -23,6 +23,8 @@ type CalendarProvider interface {
 type SolarProvider interface {
 	Latest() (solar.Snapshot, bool)
 	Status() (time.Time, string)
+	LatestHistory() (solar.History, bool)
+	HistoryStatus() (time.Time, string)
 }
 
 type statusJSON struct {
@@ -34,11 +36,13 @@ type healthJSON struct {
 	Status   string     `json:"status"`
 	Calendar statusJSON `json:"calendar"`
 	Solar    statusJSON `json:"solar"`
+	History  statusJSON `json:"history"`
 }
 
 type kitchenJSON struct {
 	Calendar   json.RawMessage `json:"calendar"`
 	Solar      *solar.Snapshot `json:"solar"`
+	History    *solar.History  `json:"history,omitempty"`
 	ServerTime string          `json:"server_time"`
 }
 
@@ -109,6 +113,18 @@ func encode(v any) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
+// encodeCompact renders v without indentation (the kitchen panel keeps the
+// last body in 4000 bytes of RTC memory), no HTML escaping, no trailing newline.
+func encodeCompact(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
 func onlyGet(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -128,10 +144,12 @@ func ts(t time.Time) string {
 func (s *srv) health(w http.ResponseWriter, _ *http.Request) {
 	cs := s.cal.Status()
 	sl, se := s.sol.Status()
+	hl, he := s.sol.HistoryStatus()
 	b, _ := json.Marshal(healthJSON{
 		Status:   "ok",
 		Calendar: statusJSON{ts(cs.LastSuccess), cs.LastError},
 		Solar:    statusJSON{ts(sl), se},
+		History:  statusJSON{ts(hl), he},
 	})
 	writeJSON(w, http.StatusOK, b)
 }
@@ -195,14 +213,23 @@ func (s *srv) kitchen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, cb.Bytes()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	out := kitchenJSON{
-		Calendar:   cb.Bytes(),
+		Calendar:   compact.Bytes(),
 		ServerTime: s.now().In(s.cfg.Timezone).Format(time.RFC3339),
 	}
 	if snap, ok := s.sol.Latest(); ok {
 		out.Solar = &snap
 	}
-	b, err := encode(out)
+	today := s.now().In(s.cfg.Timezone).Format("2006-01-02")
+	if h, ok := s.sol.LatestHistory(); ok && shift == 0 && h.Date == today {
+		out.History = &h
+	}
+	b, err := encodeCompact(out)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

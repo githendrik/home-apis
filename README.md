@@ -16,7 +16,7 @@ go run ./cmd/home-apis -c config.local.json
 |---|---|
 | `GET /health` | liveness, never requires auth |
 | `GET /events` | today/tomorrow calendar events |
-| `GET /kitchen` | kitchen panel payload (calendar + solar) |
+| `GET /kitchen` | kitchen panel payload (calendar + solar + today's history), compact JSON |
 | `GET /solar` | latest solar snapshot |
 
 If `api_token` is set, all routes except `/health` need `Authorization: Bearer <token>`.

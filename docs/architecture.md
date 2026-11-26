@@ -61,13 +61,14 @@ All routes except `/health` require `Authorization: Bearer <api_token>` when
 unknown paths also give `401 {"error":"Unauthorized"}`. Unknown route with a
 valid token: `404`, `text/plain`, body `Not Found`. Non-GET/HEAD on a known
 route: `405`. JSON bodies are 2-space indented, no HTML escaping, no trailing
-newline (`/health` is compact). Errors: `{"error":"<message>"}`.
+newline (`/health` and `/kitchen` are compact). Errors: `{"error":"<message>"}`.
 
 **`GET /health`** (public) – `status` is always first; the status objects show
 the last successful fetch/poll (UTC RFC3339, empty if none yet) and last error.
+`history` is the solar history fetch (see Solar → Poller).
 
 ```json
-{"status":"ok","calendar":{"last_success":"2026-11-10T21:00:00Z","last_error":""},"solar":{"last_success":"2026-11-10T21:04:12Z","last_error":""}}
+{"status":"ok","calendar":{"last_success":"2026-11-10T21:00:00Z","last_error":""},"solar":{"last_success":"2026-11-10T21:04:12Z","last_error":""},"history":{"last_success":"2026-11-10T21:00:00Z","last_error":""}}
 ```
 
 **`GET /events`** – the `/events` contract above, with `max_events`, shift 0.
@@ -90,11 +91,19 @@ until the first successful poll.
 ```
 
 **`GET /kitchen[?shift=0|1]`** – one call for the battery-powered kitchen panel.
-Keys in order `calendar` (identical structure to `/events`, uses
-`kitchen_max_events`, `shift` moves "Today" to tomorrow for late evenings;
-anything but 0/1 → `400`), `solar` (Snapshot, or `null` before the first poll)
-and `server_time` (now in the configured timezone, RFC3339 with offset). A
-calendar error gives `502` so the panel keeps its last screen.
+Sent **compact** (no indentation): the panel keeps the last body in 4000 bytes
+of RTC memory for offline re-renders, and a realistic busy day (5 + 5 events
+with 60-character titles, a full day of history) is about 3.4 KB
+(`TestKitchenRealisticBodyFitsPanel`). Keys in order:
+- `calendar`: same structure as `/events`, using `kitchen_max_events`.
+  `shift=1` moves "Today" to tomorrow for late evenings; anything but 0/1 → `400`.
+- `solar`: the Snapshot, or `null` before the first poll.
+- `history`: only for `shift=0` and only when the poller's last history is for
+  today in the configured timezone. Otherwise the key is absent.
+- `server_time`: now in the configured timezone, RFC3339 with offset.
+
+A calendar error gives `502` so the panel keeps its last screen. Shown
+indented here for reading:
 
 ```json
 {
@@ -121,9 +130,19 @@ calendar error gives `502` so the panel keeps its last screen.
     "source": "fake",
     "stale": false
   },
+  "history": {
+    "date": "2026-11-10", "start": "06:00", "step_min": 5, "unit_w": 100,
+    "pv": [0, 0, 1, 3, null, 7], "load": [4, 4, 5, 16, null, 9],
+    "pv_wh": 40460, "load_wh": 11800, "updated_at": "2026-11-10T19:30:00Z"
+  },
   "server_time": "2026-11-10T22:05:00+01:00"
 }
 ```
+
+**History fields:**
+- `pv` / `load`: one value per complete 5-minute bin from 06:00 local, up to 192 bins (22:00). Each value is the bin's mean power in units of `unit_w` (100 W), rounded half away from zero; `null` means the bin had no data. Both arrays have the same length.
+- `pv_wh` / `load_wh`: energy since local midnight, from the per-minute data.
+- `updated_at`: when the backend built the history (UTC).
 
 ## Config
 
@@ -258,20 +277,32 @@ API is undocumented; shapes were checked against the live EU account on
   While waiting `Read` fails fast and the poller keeps the last snapshot.
   Error texts contain only GoodWe codes/descriptions, never credentials or
   tokens.
-- **History (not used yet):** `POST {api}/sems-plant/api/v1/hems/power/statisticsAndPreV2`
-  `{stationId, items:["pSystem","pGrid","pConsum","pBat","soc"], timeScale:1, timeZone:1,
+- **History:** `POST {api}/sems-plant/api/v1/hems/power/statisticsAndPreV2`
+  `{stationId, items:["pSystem","pConsum"], timeScale:1, timeZone:1,
   startTime:"YYYY-MM-DD 00:00:00", endTime:"YYYY-MM-DD 23:59:59", needDispatchLimit:true}`
-  returns per-minute `powerData[{tp, power}]` per item for the day (kW, local
-  time) - the intended source for a history chart.
+  (local date) returns `dataList[{item, unit:"kW", powerData[{tp, power}]}]`.
+  There's one point per minute from 00:00 up to now (`tp` local
+  `YYYY-MM-DD HH:MM:SS`) plus a trailing `power: null` sentinel; nulls are
+  skipped. `pSystem` → PV, `pConsum` → load, then `BuildHistory` (5-min bins
+  from 06:00 + Wh since midnight). Shares the session, re-login and wait rules
+  with the flow call (`withSession`). A rate limit or rejected login from
+  either call pauses both.
 
 `home-apis --dump-solar` (hidden debug flag) reads the configured solar source
-once with debug logging and prints the snapshot JSON:
+once with debug logging and prints the snapshot JSON, plus a line
+`history: <date> bins=<n> pv_wh=<n> load_wh=<n>` if the source has history:
 `/opt/home-apis/home-apis -c /opt/home-apis/config.json --dump-solar`.
 
 **Poller:** `Run` polls immediately, then every `solar_poll_seconds`. Failures
 keep the last good snapshot and set `Status()` last error. `Latest()` returns
 `ok=false` until the first success and sets `stale` at read time when
 `now - lastSuccess > 3 * every`; `updated_at` stays the source's timestamp.
+
+**History in the poller:**
+- After each snapshot read, if the source implements `HistorySource` (`fake`, `sems`) and at least `HistoryEvery` (5 min) has passed since the last attempt, the poller fetches the history. The interval doesn't depend on `solar_poll_seconds`.
+- On success, the stored history is replaced. On failure, the old history is kept and `HistoryStatus()` shows the error. The snapshot isn't affected.
+- `LatestHistory()` returns whatever date was fetched last; `/kitchen` only sends it when that date is today. A history left over from yesterday therefore disappears at midnight without extra code.
+- **Fake history** uses the same PV and load formulas as the fake snapshot, one point per minute from midnight.
 
 ## Deployment
 

@@ -46,6 +46,17 @@ that the owner can revisit.
 | 15 min pause after a rejected login, 5 min after rate limiting | Don't lock the account / don't hammer an unofficial API | Agent |
 | One `flow` call per poll (station id discovered once) | It carries everything `/kitchen` needs | Agent |
 
+## Kitchen history chart (2026-11-26)
+
+| Decision | Why | By |
+|---|---|---|
+| `/kitchen` carries today's production/consumption history for the panel chart (design: `eink-kitchen-panel/docs/superpowers/specs/2026-11-26-solar-history-chart-design.md`) | The owner wants a feel for the day's production and when consumption exceeds it | User |
+| 5-minute bins from 06:00, values in 100 W units, `null` for gaps | Fits the panel's 4000-byte RTC copy; finer than the 376-px chart needs | Agent |
+| `/kitchen` sent compact instead of indented | Indented history arrays made a realistic body 6970 bytes; compact is ~3.4 KB. Only the panel reads it | Agent (found by the size test) |
+| History fetched at most every 5 min, independent of `solar_poll_seconds` | One ~1440-point response per call; SEMS updates once a minute anyway | Agent |
+| A rate limit / rejected login from either SEMS call pauses both | The limit is per account | Agent |
+| History only for `shift=0` and only when dated today | The night screen has no chart; yesterday's curve must not show after midnight | Agent |
+
 ## Units and conventions
 
 - `grid_w` negative = export, positive = import; `battery_w` positive = charging; watts and SoC are integers.
