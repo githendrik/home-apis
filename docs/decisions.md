@@ -36,9 +36,15 @@ that the owner can revisit.
 | Decision | Why | By |
 |---|---|---|
 | Build with a realistic `fake` source first | Nothing real to work against yet; lets the panel be developed | User |
-| SEMS cloud is *not* the default | GoodWe retired the legacy SEMS portal (Sep 2026); SEMS+ API is signed and in flux, no personal developer tokens | Agent (research), user agreed |
-| Preferred real source: read the inverter locally (UDP 8899 / Modbus TCP, as the Python `goodwe` library) | Stable, no account/token | Agent |
-| **Open:** network placement of the GoodWe | Swisscom Internet-Box 5 Pro guest WiFi (10.x) is isolated from the main LAN (192.168.x) with no per-rule exception. Options: GoodWe on main WiFi + local read; GoodWe on guest WiFi + SEMS+ cloud; own VLAN gear | User to decide at installation |
+| ~~SEMS cloud is *not* the default~~ (superseded 2026-11-26, see below) | GoodWe retired the legacy SEMS portal (Sep 2026); SEMS+ API is signed and in flux, no personal developer tokens | Agent (research), user agreed |
+| ~~Preferred real source: read the inverter locally (UDP 8899 / Modbus TCP, as the Python `goodwe` library)~~ (superseded by the network decision below) | Stable, no account/token | Agent |
+| ~~**Open:** network placement of the GoodWe~~ → **decided 2026-11-26:** GoodWe stays on the isolated guest WiFi; `home-apis` reads the SEMS+ cloud | If the inverter is compromised (happens more often than one would think), the attacker must not land in the main network. Guest WiFi (10.x) can't reach the LAN (192.168.x), so a local read is ruled out | User |
+| SEMS+ is workable after all: the "signature" is `sha256(ms@uid@token)` from login data, no secret key; maintained reference: `goodwe-sems-home-assistant` | Corrects the row above; checked live on 2026-11-26 | Agent |
+| Read-only visitor account (plant shared view-only), never the owner login | A leaked `config.json` only exposes readings, can't control the inverter | User |
+| Login at `eu-semsplus.goodwe.com`, not the global host | The account is registered in the EU region; the global login answered `100005` | Agent (found live) |
+| Poll every 300 s | SEMS+ flow updates on 5-minute marks; the panel looks every 15 min; avoids SEMS rate limiting | Agent |
+| 15 min pause after a rejected login, 5 min after rate limiting | Don't lock the account / don't hammer an unofficial API | Agent |
+| One `flow` call per poll (station id discovered once) | It carries everything `/kitchen` needs | Agent |
 
 ## Units and conventions
 

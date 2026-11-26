@@ -141,8 +141,10 @@ Absent or `null` keys use the default.
 | `cache_ttl_seconds` | `CACHE_TTL_SECONDS` | `300` |
 | `api_token` | `API_TOKEN` | empty (auth disabled) |
 | `timezone` | `TIMEZONE` | `Europe/Zurich` |
-| `solar_source` | `SOLAR_SOURCE` | `fake` (only supported value) |
-| `solar_poll_seconds` | `SOLAR_POLL_SECONDS` | `60` |
+| `solar_source` | `SOLAR_SOURCE` | `fake` (`fake` or `sems`) |
+| `solar_poll_seconds` | `SOLAR_POLL_SECONDS` | `60` (use `300` with `sems`) |
+| `sems_username` | `SEMS_USERNAME` | required for `sems` (read-only visitor account) |
+| `sems_password` | `SEMS_PASSWORD` | required for `sems` |
 
 ## Calendar expansion
 
@@ -205,7 +207,7 @@ JSON. Run it in the container:
 ## Solar
 
 `internal/solar` defines `Source` (`Name()`, `Read(ctx) (Snapshot, error)`),
-a `Poller` and a deterministic fake source. Real GoodWe sources plug in later.
+a `Poller`, a deterministic fake source and the GoodWe SEMS+ cloud source.
 
 **Snapshot / sign conventions** (JSON keys in this order): `pv_w`, `load_w`,
 `grid_w` (positive = import, negative = export), `battery_soc` (0-100),
@@ -224,6 +226,47 @@ of the clock in the configured timezone:
   3 kW while SoC > 20; the grid takes the remainder (so evenings import/discharge
   and early mornings at the 20 % floor import, exercising the panel warnings).
 - PV, load and battery are rounded to 10 W; grid is derived.
+
+**SEMS+ source** (`solar_source: "sems"`, `Name()` = `sems`, `sems.go`) reads
+the GoodWe cloud the way the SEMS+ web app (`eu-semsplus.goodwe.com`) does. The
+API is undocumented; shapes were checked against the live EU account on
+2026-11-26 and follow the `goodwe-sems-home-assistant` integration.
+- **Login:** `POST https://eu-semsplus.goodwe.com/web/sems/sems-user/api/v1/auth/cross-login`
+  with `{account, pwd, agreement:1, isChinese:false, isLocal:false}`, where
+  `pwd` = base64 of the lower-case hex MD5 of the password, plus the web
+  client's `Token`/`Origin`/`Referer` headers. Code `00000` returns `data`
+  (`uid`, `token`, `api`, ...). `api` is the regional gateway
+  (`https://eu-gateway.semsportal.com/web/sems`); all further calls go there.
+  An account registered in the EU region is rejected (`100005`) by the
+  global `semsplus.goodwe.com` login.
+- **Every request** carries `token: <login data JSON, verbatim>` and
+  `X-Signature: base64(hex(sha256("<ms>@<uid>@<token>")) + "@" + <ms>)`
+  (`<ms>` = Unix milliseconds; the login itself is signed with empty uid/token).
+- **Station:** `POST {api}/sems-plant/api/portal/stations/page`
+  `{"current":1,"size":100}` once; the first `dataList[].id` is used.
+- **Each poll:** `GET {api}/sems-plant/api/stations/flow?stationId=<id>`.
+  Values are kW: `pSystem` (PV; falls back to `pAc`), `pConsum` (load),
+  `pGrid` (positive = **export**), `pBat` (positive = **discharge**, not yet
+  confirmed on this battery), `soc` (%), `refreshTime` (local wall time,
+  updates on 5-minute marks). Converted to watts (rounded), grid and battery
+  sign-flipped to our convention; `updated_at` = `refreshTime` in the
+  configured timezone (now if missing). Numbers may also arrive as strings. A
+  flow with none of PV/load/grid is an error.
+- **Errors:** HTTP 401 or codes `C0602`/`C0607`/`100002` = token expired: log in
+  again and retry once. A rejected login waits 15 min before the next login
+  attempt (avoids locking the account); HTTP 429 or code `GY0429` waits 5 min.
+  While waiting `Read` fails fast and the poller keeps the last snapshot.
+  Error texts contain only GoodWe codes/descriptions, never credentials or
+  tokens.
+- **History (not used yet):** `POST {api}/sems-plant/api/v1/hems/power/statisticsAndPreV2`
+  `{stationId, items:["pSystem","pGrid","pConsum","pBat","soc"], timeScale:1, timeZone:1,
+  startTime:"YYYY-MM-DD 00:00:00", endTime:"YYYY-MM-DD 23:59:59", needDispatchLimit:true}`
+  returns per-minute `powerData[{tp, power}]` per item for the day (kW, local
+  time) - the intended source for a history chart.
+
+`home-apis --dump-solar` (hidden debug flag) reads the configured solar source
+once with debug logging and prints the snapshot JSON:
+`/opt/home-apis/home-apis -c /opt/home-apis/config.json --dump-solar`.
 
 **Poller:** `Run` polls immediately, then every `solar_poll_seconds`. Failures
 keep the last good snapshot and set `Status()` last error. `Latest()` returns

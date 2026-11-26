@@ -100,3 +100,26 @@ func TestUnknownSolarSource(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestSemsSourceWithCredentials(t *testing.T) {
+	p := writeFile(t, `{"icloud_username":"u","icloud_app_password":"p","solar_source":"sems",
+		"sems_username":"v@example.com","sems_password":"file"}`)
+	env := map[string]string{"SEMS_PASSWORD": "env"}
+	c, err := Load([]string{"-c", p}, func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SolarSource != "sems" || c.SemsUsername != "v@example.com" || c.SemsPassword != "env" {
+		t.Fatalf("unexpected sems config: %+v", c)
+	}
+}
+
+func TestSemsSourceRequiresCredentials(t *testing.T) {
+	for _, extra := range []string{``, `,"sems_username":"v@example.com"`, `,"sems_password":"x"`} {
+		p := writeFile(t, `{"icloud_username":"u","icloud_app_password":"p","solar_source":"sems"`+extra+`}`)
+		_, err := Load([]string{"-c", p}, noEnv)
+		if err == nil || !strings.Contains(err.Error(), "sems_") {
+			t.Fatalf("extra %q: expected error mentioning sems_ key, got %v", extra, err)
+		}
+	}
+}

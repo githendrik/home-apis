@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -23,6 +24,7 @@ var version = "dev"
 
 func main() {
 	args, dump := stripFlag(os.Args[1:], "--dump-events")
+	args, dumpSolarFlag := stripFlag(args, "--dump-solar")
 	args, showVersion := stripFlag(args, "--version")
 	if showVersion {
 		fmt.Println(version)
@@ -32,6 +34,14 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(1)
+	}
+	if dumpSolarFlag {
+		slog.SetLogLoggerLevel(slog.LevelDebug)
+		if err := dumpSolar(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "dump-solar:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	if dump {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
@@ -55,7 +65,7 @@ func run(cfg config.Config) error {
 	cal := calendar.NewService(
 		calendar.NewICloudFetcher(cfg.ICloudUsername, cfg.ICloudAppPassword, cfg.CalendarName),
 		ttl, cfg.Timezone, time.Now)
-	poller := solar.NewPoller(solar.NewFake(time.Now, cfg.Timezone),
+	poller := solar.NewPoller(newSolarSource(cfg),
 		time.Duration(cfg.SolarPollSeconds)*time.Second, time.Now)
 	go poller.Run(ctx)
 
@@ -115,4 +125,29 @@ func dumpEvents(cfg config.Config) error {
 		return err
 	}
 	return calendar.Encode(os.Stdout, resp)
+}
+
+func newSolarSource(cfg config.Config) solar.Source {
+	if cfg.SolarSource == "sems" {
+		return solar.NewSems(solar.SemsOptions{
+			Username: cfg.SemsUsername,
+			Password: cfg.SemsPassword,
+			Loc:      cfg.Timezone,
+		})
+	}
+	return solar.NewFake(time.Now, cfg.Timezone)
+}
+
+// dumpSolar reads the configured solar source once and prints the snapshot
+// (debug aid).
+func dumpSolar(cfg config.Config) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	snap, err := newSolarSource(cfg).Read(ctx)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(snap)
 }

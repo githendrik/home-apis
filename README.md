@@ -36,8 +36,10 @@ JSON file via `--config`/`-c`; env vars override. See `deploy/config.example.jso
 | `cache_ttl_seconds` | `CACHE_TTL_SECONDS` | `300` |
 | `api_token` | `API_TOKEN` | empty (auth off) |
 | `timezone` | `TIMEZONE` | `Europe/Zurich` |
-| `solar_source` | `SOLAR_SOURCE` | `fake` |
-| `solar_poll_seconds` | `SOLAR_POLL_SECONDS` | `60` |
+| `solar_source` | `SOLAR_SOURCE` | `fake` (`fake` or `sems`) |
+| `solar_poll_seconds` | `SOLAR_POLL_SECONDS` | `60` (use `300` with `sems`) |
+| `sems_username` | `SEMS_USERNAME` | required for `sems` |
+| `sems_password` | `SEMS_PASSWORD` | required for `sems` |
 
 ## Install on the LXC
 

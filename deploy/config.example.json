@@ -9,5 +9,7 @@
   "timezone": "Europe/Zurich",
   "kitchen_max_events": 5,
   "solar_source": "fake",
-  "solar_poll_seconds": 60
+  "solar_poll_seconds": 60,
+  "sems_username": "read-only-visitor@example.com",
+  "sems_password": "only-used-with-solar_source-sems"
 }

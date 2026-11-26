@@ -7,7 +7,7 @@ Small Go service on the home Proxmox host that feeds the e-ink panels:
   desk panels.
 - `GET /kitchen` — calendar + solar in one response for the battery-powered
   kitchen panel ([eink-kitchen-panel](https://github.com/githendrik/eink-kitchen-panel)).
-- `GET /solar` — latest solar snapshot (currently **fake data**; GoodWe not installed yet).
+- `GET /solar` — latest solar snapshot (`fake` data, or the GoodWe SEMS+ cloud with `solar_source: "sems"`).
 - `GET /health` — public liveness + source status.
 
 ## Read in this order
@@ -23,10 +23,10 @@ historical. The docs above win where they differ.
 
 | Path | What |
 |---|---|
-| `cmd/home-apis/` | `main.go`: wiring, `--version`, hidden `--dump-events` debug flag |
+| `cmd/home-apis/` | `main.go`: wiring, `--version`, hidden `--dump-events` / `--dump-solar` debug flags |
 | `internal/config/` | JSON file + env config (Deno-compatible keys) |
 | `internal/calendar/` | iCloud CalDAV fetcher (`caldav.go`), RRULE expansion (`expand.go`), day grouping + `/events` encoding (`response.go`), cache with stale-while-revalidate (`service.go`) |
-| `internal/solar/` | `Source` interface, `fake` source, poller/cache |
+| `internal/solar/` | `Source` interface, `fake` source, SEMS+ cloud source (`sems.go`), poller/cache |
 | `internal/server/` | HTTP handlers + bearer auth |
 | `deploy/` | systemd unit, example config |
 | `install.sh` | installer/upgrader used on the LXC (published with each release) |
@@ -40,6 +40,7 @@ git tag vX.Y.Z && git push origin vX.Y.Z                         # release (bina
 # on the LXC (CT 110 on host `lab`), as root:
 curl -fsSL https://github.com/githendrik/home-apis/releases/latest/download/install.sh | sh
 /opt/home-apis/home-apis -c /opt/home-apis/config.json --dump-events   # live iCloud check with debug log
+/opt/home-apis/home-apis -c /opt/home-apis/config.json --dump-solar    # live solar source check (SEMS+ login + one flow read)
 ```
 
 ## Rules

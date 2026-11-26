@@ -23,6 +23,8 @@ type Config struct {
 	APIToken          string // "" = auth disabled
 	Timezone          *time.Location
 	SolarSource       string
+	SemsUsername      string
+	SemsPassword      string
 }
 
 // fileConfig uses pointers so that absent and null both mean "use default".
@@ -38,6 +40,8 @@ type fileConfig struct {
 	KitchenMaxEvents  *int    `json:"kitchen_max_events"`
 	SolarSource       *string `json:"solar_source"`
 	SolarPollSeconds  *int    `json:"solar_poll_seconds"`
+	SemsUsername      *string `json:"sems_username"`
+	SemsPassword      *string `json:"sems_password"`
 }
 
 // Load reads config. args excludes the program name. Env vars override the file.
@@ -97,6 +101,8 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 		SolarPollSeconds:  num("SOLAR_POLL_SECONDS", f.SolarPollSeconds, 60),
 		APIToken:          str("API_TOKEN", f.APIToken, ""),
 		SolarSource:       str("SOLAR_SOURCE", f.SolarSource, "fake"),
+		SemsUsername:      str("SEMS_USERNAME", f.SemsUsername, ""),
+		SemsPassword:      str("SEMS_PASSWORD", f.SemsPassword, ""),
 	}
 	if firstErr != nil {
 		return Config{}, firstErr
@@ -120,8 +126,15 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	}
 	switch c.SolarSource {
 	case "fake":
+	case "sems":
+		if c.SemsUsername == "" {
+			return Config{}, fmt.Errorf("sems_username is required for solar_source sems (SEMS_USERNAME env var or config file)")
+		}
+		if c.SemsPassword == "" {
+			return Config{}, fmt.Errorf("sems_password is required for solar_source sems (SEMS_PASSWORD env var or config file)")
+		}
 	default:
-		return Config{}, fmt.Errorf("unknown solar_source %q (supported: fake)", c.SolarSource)
+		return Config{}, fmt.Errorf("unknown solar_source %q (supported: fake, sems)", c.SolarSource)
 	}
 	tz := str("TIMEZONE", f.Timezone, "Europe/Zurich")
 	loc, err := time.LoadLocation(tz)
